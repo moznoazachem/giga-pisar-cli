@@ -27,7 +27,13 @@ python3 -m venv "$DEST/.venv"
 #    в котором нет load_onnx/infer_onnx, нужных для модели v3;
 #  * onnxruntime строго 1.23.x — этого требует сам gigaam 0.2.0;
 #  * numpy 2.x — с первой веткой onnxruntime падает на импорте.
-echo "── gigaam из исходников (займёт пару минут, тянет torch)"
+# torch ставим отдельно и в версии для процессора: gigaam импортирует его
+# при загрузке пакета, но для самого распознавания он не нужен — считает
+# onnxruntime. Сборка под видеокарту весит около двух гигабайт, эта — двести мегабайт.
+echo "── torch для процессора (~200 МБ)"
+"$DEST/.venv/bin/pip" install -q torch --index-url https://download.pytorch.org/whl/cpu
+
+echo "── gigaam из исходников"
 "$DEST/.venv/bin/pip" install -q "git+https://github.com/salute-developers/GigaAM.git"
 "$DEST/.venv/bin/pip" install -q "onnxruntime==1.23.*" "numpy>=2"
 
