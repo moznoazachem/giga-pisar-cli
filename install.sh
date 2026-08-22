@@ -30,8 +30,8 @@ python3 -m venv "$DEST/.venv"
 # torch ставим отдельно и в версии для процессора: gigaam импортирует его
 # при загрузке пакета, но для самого распознавания он не нужен — считает
 # onnxruntime. Сборка под видеокарту весит около двух гигабайт, эта — двести мегабайт.
-echo "── torch для процессора (~200 МБ)"
-"$DEST/.venv/bin/pip" install -q torch --index-url https://download.pytorch.org/whl/cpu
+echo "── torch и torchaudio для процессора (~250 МБ)"
+"$DEST/.venv/bin/pip" install -q torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 echo "── gigaam из исходников"
 "$DEST/.venv/bin/pip" install -q "git+https://github.com/salute-developers/GigaAM.git"
