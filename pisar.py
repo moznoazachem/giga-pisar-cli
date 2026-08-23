@@ -1,149 +1,157 @@
 #!/usr/bin/env python
-"""Гига Писарь — распознавание русской речи через GigaAM v3 (ONNX, CPU).
+"""Гига Писарь — распознавание русской речи через GigaAM v3 (ONNX, процессор).
 
     pisar запись.ogg              распознать файл, вывести текст
     pisar a.m4a b.wav c.mp3       несколько файлов подряд
-    pisar --model-dir DIR файл    указать папку с моделью явно
+    pisar --serve                 поднять сервер распознавания
+    pisar --model-dir DIR ...     указать папку с моделью явно
+
+Режим сервера держит модель в памяти и принимает записи по сети:
+
+    POST /v1/audio/transcriptions   multipart, поле file → {"text": "..."}
+    GET  /health                    проверка, что сервер жив
+
+Обращение к нему совместимо с OpenAI, поэтому годится и для маковского
+приложения, и для чужих программ вроде MacWhisper. По умолчанию слушает
+127.0.0.1:8737 — только свою машину, наружу ничего не торчит.
 
 Принимает любой формат, который понимает ffmpeg. Записи длиннее 25 секунд
-режет на куски по паузам между фразами, а не посреди слова, и склеивает
-результат. Работает целиком на своей машине — в сеть ничего не уходит.
+режет по паузам между фразами, а не посреди слова, и склеивает результат.
+Работает целиком на своей машине — в сеть ничего не уходит.
 
-Папка с моделью берётся из переменной PISAR_MODEL_DIR, иначе из
-/opt/gigaam/onnx_int8, иначе из папки рядом со скриптом.
+Папка с моделью берётся из PISAR_MODEL_DIR, иначе из /opt/gigaam/onnx_int8,
+иначе из папки model рядом со скриптом.
 """
 import contextlib
+import json
 import os
-import subprocess
 import sys
 import tempfile
-import warnings
-import wave
+import threading
 
-warnings.filterwarnings("ignore")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-MAX_CHUNK = 24.0          # предел одного прохода модели — 25 секунд
-SILENCE_DB = -35          # порог тишины для нарезки
-SILENCE_MIN = 0.3         # минимальная длина паузы, секунды
-MODEL_NAME = "v3_e2e_rnnt"
+import giga_core
 
-DEFAULT_DIRS = [
-    os.environ.get("PISAR_MODEL_DIR", ""),
-    "/opt/gigaam/onnx_int8",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "model"),
-]
+HOST = "127.0.0.1"
+PORT = 8737
 
 
-def find_model_dir() -> str:
-    for path in DEFAULT_DIRS:
-        if path and os.path.exists(os.path.join(path, f"{MODEL_NAME}.yaml")):
-            return path
-    sys.exit(
-        "Не нашёл модель. Укажите папку через PISAR_MODEL_DIR или --model-dir.\n"
-        "Скачать: https://github.com/moznoazachem/giga-pisar/releases"
-    )
+# ─────────────────────────── режим сервера ───────────────────────────
+
+def _разобрать_multipart(тело: bytes, content_type: str) -> bytes:
+    """Достаёт содержимое поля file. Свой разбор — чтобы не тянуть fastapi."""
+    маркер = "boundary="
+    if маркер not in content_type:
+        raise ValueError("в запросе нет границы multipart")
+    граница = content_type.split(маркер, 1)[1].strip().strip('"')
+    разделитель = b"--" + граница.encode()
+
+    for часть in тело.split(разделитель):
+        if b"\r\n\r\n" not in часть:
+            continue
+        шапка, содержимое = часть.split(b"\r\n\r\n", 1)
+        if b'name="file"' not in шапка:
+            continue
+        # у последней части в хвосте остаются CRLF и «--»
+        return содержимое.rstrip(b"-").rstrip(b"\r\n")
+    raise ValueError("в запросе нет поля file")
 
 
-def ffmpeg(*args) -> None:
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args], check=True)
+def serve(model_dir: str, host: str = HOST, port: int = PORT) -> None:
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    print(f"[писарь] загружаю модель...", file=sys.stderr, flush=True)
+    engine = giga_core.Engine(model_dir)
+    замок = threading.Lock()
+    print(f"[писарь] готов: http://{host}:{port}  (модель: {engine.model_dir})",
+          file=sys.stderr, flush=True)
+
+    class Обработчик(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):      # без шума в консоли
+            pass
+
+        def _ответ(self, код: int, данные: dict) -> None:
+            тело = json.dumps(данные, ensure_ascii=False).encode()
+            self.send_response(код)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(тело)))
+            self.end_headers()
+            self.wfile.write(тело)
+
+        def do_GET(self):
+            if self.path.rstrip("/") in ("/health", "/v1/health"):
+                self._ответ(200, {"status": "ok", "model": giga_core.MODEL_NAME})
+            else:
+                self._ответ(404, {"error": "нет такого адреса"})
+
+        def do_POST(self):
+            if not self.path.rstrip("/").endswith("/audio/transcriptions"):
+                self._ответ(404, {"error": "нет такого адреса"})
+                return
+            try:
+                длина = int(self.headers.get("Content-Length", 0))
+                запись = _разобрать_multipart(
+                    self.rfile.read(длина), self.headers.get("Content-Type", ""))
+            except Exception as e:
+                self._ответ(400, {"error": f"не разобрал запрос: {e}"})
+                return
+
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    путь = os.path.join(tmp, "запись")
+                    with open(путь, "wb") as f:
+                        f.write(запись)
+                    with замок:                 # модель одна, пускаем по очереди
+                        текст = engine.transcribe(путь)
+                self._ответ(200, {"text": текст})
+            except Exception as e:
+                print(f"[писарь] сбой распознавания: {e}", file=sys.stderr, flush=True)
+                self._ответ(500, {"error": str(e)})
+
+    ThreadingHTTPServer((host, port), Обработчик).serve_forever()
 
 
-def duration(path: str) -> float:
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=nw=1:nk=1", path],
-        capture_output=True, text=True, check=True,
-    )
-    return float(out.stdout.strip())
-
-
-def find_silences(path: str) -> list[float]:
-    """Середины пауз — кандидаты в точки разреза."""
-    out = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", path, "-af",
-         f"silencedetect=noise={SILENCE_DB}dB:d={SILENCE_MIN}", "-f", "null", "-"],
-        capture_output=True, text=True,
-    )
-    points, start = [], None
-    for line in out.stderr.splitlines():
-        if "silence_start:" in line:
-            start = float(line.split("silence_start:")[1].strip())
-        elif "silence_end:" in line and start is not None:
-            end = float(line.split("silence_end:")[1].split("|")[0].strip())
-            points.append((start + end) / 2)
-            start = None
-    return points
-
-
-def chunk_bounds(total: float, silences: list[float]) -> list[tuple[float, float]]:
-    """Куски не длиннее предела, разрез — по последней паузе перед ним."""
-    bounds, pos = [], 0.0
-    while total - pos > MAX_CHUNK:
-        candidates = [s for s in silences if pos + 3 < s <= pos + MAX_CHUNK]
-        cut = candidates[-1] if candidates else pos + MAX_CHUNK
-        bounds.append((pos, cut))
-        pos = cut
-    bounds.append((pos, total))
-    return bounds
-
-
-def read_wav(path: str):
-    import numpy as np
-    with wave.open(path, "rb") as w:
-        data = w.readframes(w.getnframes())
-    return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-
-
-def transcribe(path: str, sessions, cfg, tmpdir: str) -> str:
-    from gigaam.onnx_utils import infer_onnx
-
-    wav = os.path.join(tmpdir, "in.wav")
-    ffmpeg("-i", path, "-ac", "1", "-ar", "16000", wav)
-
-    total = duration(wav)
-    if total <= MAX_CHUNK + 1:
-        files = [wav]
-    else:
-        files = []
-        for i, (a, b) in enumerate(chunk_bounds(total, find_silences(wav))):
-            part = os.path.join(tmpdir, f"part{i}.wav")
-            ffmpeg("-i", wav, "-ss", str(a), "-to", str(b), part)
-            files.append(part)
-
-    texts = infer_onnx([read_wav(f) for f in files], cfg, sessions,
-                       batch_size=1, progress=False)
-    return " ".join(t for t in texts if t).strip()
-
+# ─────────────────────────── командная строка ───────────────────────────
 
 def main() -> None:
     args = sys.argv[1:]
-    model_dir = ""
-    if "--model-dir" in args:
-        i = args.index("--model-dir")
-        model_dir = args[i + 1]
-        del args[i:i + 2]
+
+    def взять(флаг, по_умолчанию=None):
+        if флаг in args:
+            i = args.index(флаг)
+            значение = args[i + 1]
+            del args[i:i + 2]
+            return значение
+        return по_умолчанию
+
+    model_dir = взять("--model-dir", "") or ""
+    host = взять("--host", HOST)
+    port = int(взять("--port", PORT))
+    режим_сервера = "--serve" in args
+    if режим_сервера:
+        args.remove("--serve")
+
+    if режим_сервера:
+        serve(model_dir, host, port)
+        return
+
     if not args or args[0] in ("-h", "--help"):
         print(__doc__, file=sys.stderr)
         sys.exit(0 if args else 1)
 
-    model_dir = model_dir or find_model_dir()
     real_stdout = sys.stdout
-
-    # библиотека печатает служебное в stdout — уводим,
-    # чтобы вызывающему достался только чистый текст
+    # служебное — в stderr, чтобы вызывающему достался только чистый текст
     with contextlib.redirect_stdout(sys.stderr):
-        from gigaam.onnx_utils import load_onnx
-        sessions, cfg = load_onnx(model_dir, MODEL_NAME)
+        engine = giga_core.Engine(model_dir)
+        результаты = [(путь, engine.transcribe(путь)) for путь in args]
 
-        results = []
-        for path in args:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                results.append((path, transcribe(path, sessions, cfg, tmpdir)))
-
-    for path, text in results:
+    for путь, текст in результаты:
         if len(args) > 1:
-            print(f"── {os.path.basename(path)}", file=sys.stderr)
-        print(text, file=real_stdout)
+            print(f"── {os.path.basename(путь)}", file=sys.stderr)
+        print(текст, file=real_stdout)
 
 
 if __name__ == "__main__":

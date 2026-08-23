@@ -3,3 +3,5 @@ build/
 model/
 *.tar.gz
 ЗАМЕТКИ.md
+__pycache__/
+*.pyc

@@ -1,7 +1,11 @@
 #!/bin/bash
 # Установка Гига Писаря. Проверено на Ubuntu 22.04 и 24.04.
-#   bash install.sh [папка]       по умолчанию /opt/giga-pisar
+#   bash install.sh [папка]            по умолчанию /opt/giga-pisar
+#   bash install.sh --service [папка]  ещё и поднять сервер службой
 set -euo pipefail
+
+SERVICE=0
+if [ "${1:-}" = "--service" ]; then SERVICE=1; shift; fi
 
 DEST="${1:-/opt/giga-pisar}"
 REPO="https://github.com/moznoazachem/giga-pisar"
@@ -22,31 +26,22 @@ echo "── окружение"
 python3 -m venv "$DEST/.venv"
 "$DEST/.venv/bin/pip" install -q --upgrade pip
 
-# Версии подобраны опытным путём и важны:
-#  * gigaam ставится ТОЛЬКО из исходников — в PyPI лежит 0.1.0 со старым API,
-#    в котором нет load_onnx/infer_onnx, нужных для модели v3;
-#  * onnxruntime строго 1.23.x — этого требует сам gigaam 0.2.0;
-#  * numpy 2.x — с первой веткой onnxruntime падает на импорте.
-# torch ставим отдельно и в версии для процессора: gigaam импортирует его
-# при загрузке пакета, но для самого распознавания он не нужен — считает
-# onnxruntime. Сборка под видеокарту весит около двух гигабайт, эта — двести мегабайт.
-echo "── torch и torchaudio для процессора (~250 МБ)"
-"$DEST/.venv/bin/pip" install -q torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-echo "── gigaam из исходников"
-"$DEST/.venv/bin/pip" install -q "git+https://github.com/salute-developers/GigaAM.git"
-"$DEST/.venv/bin/pip" install -q "onnxruntime==1.23.*" "numpy>=2"
+# Всё, что нужно для счёта, и ничего лишнего.
+# Раньше здесь ставились пакет gigaam и PyTorch на четверть гигабайта:
+# gigaam импортирует torch при загрузке, хотя считает не им, а onnxruntime.
+# Теперь распознавание живёт в giga_core.py рядом, и ни то ни другое не нужно —
+# окружение похудело примерно с гигабайта до полутора сотен мегабайт.
+echo "── зависимости (около 150 МБ)"
+"$DEST/.venv/bin/pip" install -q onnxruntime numpy sentencepiece pyyaml
 
 echo "── модель (204 МБ архив, 309 МБ на диске)"
 mkdir -p "$DEST/model"
 curl -fL --progress-bar "$MODEL_URL" | tar xz -C "$DEST/model" --strip-components=1
+# Путь к токенизатору в yaml прописан с той машины, где делали экспорт.
+# Править его больше не нужно: ядро сперва ищет токенизатор рядом с моделью.
 
-# В yaml прописан путь к токенизатору. В архиве он оставлен заглушкой,
-# подставляем настоящий — иначе модель не запустится.
-sed -i "s|model_path: .*|model_path: $DEST/model/v3_e2e_rnnt_tokenizer.model|" \
-    "$DEST/model/v3_e2e_rnnt.yaml"
-
-echo "── скрипт"
+echo "── скрипты"
+curl -fsSL "$REPO/raw/main/giga_core.py" -o "$DEST/giga_core.py"
 curl -fsSL "$REPO/raw/main/pisar.py" -o "$DEST/pisar.py"
 
 sudo tee /usr/local/bin/pisar >/dev/null <<LAUNCHER
@@ -55,5 +50,31 @@ PISAR_MODEL_DIR="$DEST/model" exec "$DEST/.venv/bin/python" "$DEST/pisar.py" "\$
 LAUNCHER
 sudo chmod +x /usr/local/bin/pisar
 
+if [ "$SERVICE" = "1" ]; then
+  echo "── служба (сервер держит модель в памяти)"
+  sudo tee /etc/systemd/system/pisar.service >/dev/null <<UNIT
+[Unit]
+Description=Гига Писарь — сервер распознавания речи
+After=network.target
+
+[Service]
+Type=simple
+User=$(id -un)
+Environment=PISAR_MODEL_DIR=$DEST/model
+ExecStart=$DEST/.venv/bin/python $DEST/pisar.py --serve
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  sudo systemctl daemon-reload
+  sudo systemctl enable -q pisar
+  sudo systemctl restart pisar
+  echo "   сервер: http://127.0.0.1:8737"
+fi
+
 echo
 echo "Готово. Проверка:  pisar запись.ogg"
+# без «|| true» set -e счёл бы обычную установку неудачной
+[ "$SERVICE" = "1" ] && echo "           и:      curl http://127.0.0.1:8737/health" || true
