@@ -53,15 +53,19 @@ def _разобрать_multipart(тело: bytes, content_type: str) -> bytes:
         шапка, содержимое = часть.split(b"\r\n\r\n", 1)
         if b'name="file"' not in шапка:
             continue
-        # у последней части в хвосте остаются CRLF и «--»
-        return содержимое.rstrip(b"-").rstrip(b"\r\n")
+        # Перед следующей границей стоит ровно один CRLF — его и убираем.
+        # Срезать «всё похожее» нельзя: запись может сама кончаться
+        # байтами 0x0D/0x0A, и они бы пропали.
+        if содержимое.endswith(b"\r\n"):
+            содержимое = содержимое[:-2]
+        return содержимое
     raise ValueError("в запросе нет поля file")
 
 
 def serve(model_dir: str, host: str = HOST, port: int = PORT) -> None:
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    print(f"[писарь] загружаю модель...", file=sys.stderr, flush=True)
+    print("[писарь] загружаю модель...", file=sys.stderr, flush=True)
     engine = giga_core.Engine(model_dir)
     замок = threading.Lock()
     print(f"[писарь] готов: http://{host}:{port}  (модель: {engine.model_dir})",

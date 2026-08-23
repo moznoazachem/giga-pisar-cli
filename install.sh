@@ -51,7 +51,14 @@ LAUNCHER
 sudo chmod +x /usr/local/bin/pisar
 
 if [ "$SERVICE" = "1" ]; then
-  echo "── служба (сервер держит модель в памяти)"
+  # Под кем крутить сервер. По умолчанию — тот, кто ставит; если ставят
+  # от root, лучше назвать отдельного пользователя: PISAR_USER=имя.
+  # Прав ему нужно немного — только читать папку с моделью.
+  RUN_AS="${PISAR_USER:-$(id -un)}"
+  if [ "$RUN_AS" = "root" ]; then
+    echo "   сервер будет работать от root — лучше указать PISAR_USER=имя"
+  fi
+  echo "── служба (сервер держит модель в памяти), пользователь $RUN_AS"
   sudo tee /etc/systemd/system/pisar.service >/dev/null <<UNIT
 [Unit]
 Description=Гига Писарь — сервер распознавания речи
@@ -59,7 +66,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=$(id -un)
+User=$RUN_AS
 Environment=PISAR_MODEL_DIR=$DEST/model
 ExecStart=$DEST/.venv/bin/python $DEST/pisar.py --serve
 Restart=always

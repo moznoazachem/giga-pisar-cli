@@ -86,7 +86,7 @@ class Features:
         """Сколько кадров получится — та же формула, что в оригинале."""
         if self.center:
             return n_samples // self.hop_length + 1
-        return (n_samples - self.win_length) // self.hop_length + 1
+        return max(0, (n_samples - self.win_length) // self.hop_length + 1)
 
     def __call__(self, wav: np.ndarray) -> np.ndarray:
         """Волна [samples] → признаки [1, n_mels, кадры], float32."""
@@ -175,7 +175,6 @@ def find_model_dir(extra: str = "") -> str:
         os.environ.get("PISAR_MODEL_DIR", ""),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "model"),
         "/opt/gigaam/onnx_int8",
-        os.path.expanduser("~/projects/gigaam-cli/onnx_int8"),
     ]
     for path in candidates:
         if path and os.path.exists(os.path.join(path, f"{MODEL_NAME}.yaml")):
@@ -228,6 +227,9 @@ class Engine:
 
     # ── распознавание одной волны (не длиннее предела модели)
     def transcribe_wave(self, wav: np.ndarray) -> str:
+        # Короче одного окна — кадров не получится, модели нечего дать.
+        if len(wav) < self.features.win_length:
+            return ""
         feats = self.features(wav)
         lens = np.array([self.features.out_len(len(wav))], dtype=np.int64)
 
