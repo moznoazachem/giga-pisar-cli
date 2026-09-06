@@ -57,7 +57,7 @@ on the same machine.
 ### Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/moznoazachem/giga-pisar/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/moznoazachem/giga-pisar-cli/main/install.sh | bash
 ```
 
 Ubuntu 22.04 and 24.04. Sets up `/opt/giga-pisar`, downloads the model from
@@ -144,7 +144,7 @@ models. Sources from GitHub only.
 
 ### Related project
 
-[Giga Pisar for macOS](https://github.com/moznoazachem/giga) — dictation on
+[Giga Pisar for macOS](https://github.com/moznoazachem/giga-pisar) — dictation on
 a hotkey: hold right ⌘, speak, release, the text lands in the active window.
 Same core inside, ported to Swift.
 
@@ -208,7 +208,7 @@ GET  /health                    жив ли
 ### Установка
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/moznoazachem/giga-pisar/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/moznoazachem/giga-pisar-cli/main/install.sh | bash
 ```
 
 Ubuntu 22.04 и 24.04. Ставит окружение в `/opt/giga-pisar`, скачивает модель
@@ -295,7 +295,7 @@ text = subprocess.run(
 
 ### Родственный проект
 
-[Giga Pisar для macOS](https://github.com/moznoazachem/giga) — диктовка
+[Giga Pisar для macOS](https://github.com/moznoazachem/giga-pisar) — диктовка
 по горячей клавише: зажал правый ⌘, сказал, отпустил, текст вставился
 в активное окно. Внутри то же самое ядро, перенесённое на Swift.
 

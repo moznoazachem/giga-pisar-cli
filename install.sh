@@ -8,7 +8,7 @@ SERVICE=0
 if [ "${1:-}" = "--service" ]; then SERVICE=1; shift; fi
 
 DEST="${1:-/opt/giga-pisar}"
-REPO="https://github.com/moznoazachem/giga-pisar"
+REPO="https://github.com/moznoazachem/giga-pisar-cli"
 MODEL_URL="$REPO/releases/latest/download/gigaam-v3-onnx-int8.tar.gz"
 
 echo "── системные пакеты"
