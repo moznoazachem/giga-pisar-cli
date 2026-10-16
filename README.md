@@ -18,15 +18,16 @@ GigaChat team, the best open model for Russian to date. It ships here converted
 to ONNX and quantized to int8, so it runs on an ordinary server with no GPU
 and weighs 309 MB instead of a gigabyte (204 MB archived).
 
-### One core, two shells
+### One core, three shells
 
 All the work lives in `giga_core.py`: audio preprocessing, model inference,
-decoding. Two ways to call it:
+decoding. Three ways to call it:
 
 | Shell | How | When |
 |---|---|---|
 | command line | `pisar file.ogg` | one-off transcriptions, scripts |
 | server | `pisar --serve` | a stream of recordings: the model stays in memory |
+| dictation | hold right Ctrl | typing by voice on a Linux desktop (X11 only) |
 
 The server speaks the OpenAI dialect, so third-party tools work too:
 
@@ -99,6 +100,50 @@ text = subprocess.run(
 ).stdout.strip()
 ```
 
+### Dictation on a hotkey (Linux, X11 only)
+
+The same thing the macOS app does, for a Linux desktop. Hold right Ctrl,
+speak, release, and the text lands in the active window.
+
+```bash
+curl -fsSL .../install.sh | bash -s -- --hotkey
+```
+
+This adds `xclip`, `pulseaudio-utils` and `pynput`, puts `pisar-hotkey` into
+`/usr/local/bin`, starts it and registers it in `~/.config/autostart`, so it
+comes back after login.
+
+- right Ctrl: dictate, the text is pasted with a trailing space;
+- right Ctrl + Shift: dictate and press Enter after pasting, handy for chats;
+- the text goes through the clipboard, and 300 ms later the clipboard gets
+  back what was there before. Only one format comes back (text as text,
+  otherwise the first one offered, so an image survives, rich text from a
+  browser loses its formatting). A slow window may need more time:
+  `PISAR_CLIPBOARD_MS=800`, and `0` leaves the dictated text in the clipboard;
+- history of what was dictated: `$XDG_RUNTIME_DIR/pisar-history.log`. It lives
+  in memory, rotates at 256 KB and is gone after shutdown. Without
+  `XDG_RUNTIME_DIR` no history is kept;
+- a different key: `PISAR_KEY=alt_r` (any `pynput.keyboard.Key` name);
+- log: `$XDG_RUNTIME_DIR/pisar-hotkey.log` (or `~/.cache/pisar-hotkey.log`);
+- to turn it off, remove `~/.config/autostart/giga-pisar.desktop`.
+
+The microphone is opened only while the key is held. Between dictations
+nothing listens.
+
+X11 only. Under Wayland an app can't see other windows' key presses or paste
+into them this way, so `pisar-hotkey` exits with a message. Tested on
+Ubuntu 24.04 with KDE Plasma.
+
+If the first fraction of a second gets cut off, add `--no-mic-sleep` (see
+pitfalls below):
+
+```bash
+curl -fsSL .../install.sh | bash -s -- --hotkey --no-mic-sleep
+```
+
+If the server is installed as well, the dictation daemon still loads its own
+copy of the model, about 500 MB more memory.
+
 ### Performance
 
 Measured on 2 CPU cores, Ubuntu 24.04, a 13-second recording:
@@ -142,11 +187,22 @@ and cuts there.
 It ships 0.1.0 with the old API: no `load_onnx` / `infer_onnx` needed for v3
 models. Sources from GitHub only.
 
+**The sound card takes a while to wake up.** Starting `pw-record` on every key
+press lost about a second at the start of a phrase. `parec` with
+`--latency-msec=50` delivers sound much sooner, but a suspended sound card
+still needs about 240 ms to wake (measured on Intel SOF), and the first
+syllable goes with it. With the card awake the first audio arrives in about
+25 ms. `--no-mic-sleep` adds a WirePlumber rule that keeps microphones from
+suspending. Nobody reads the sound until the key is held, and no "microphone
+in use" indicator shows up, but the card stays powered, which costs some
+battery. Delete `~/.config/wireplumber/*/51-pisar-mic-nosuspend.*` to undo.
+
 ### Related project
 
 [Giga Pisar for macOS](https://github.com/moznoazachem/giga-pisar) — dictation on
 a hotkey: hold right ⌘, speak, release, the text lands in the active window.
-Same core inside, ported to Swift.
+Same core inside, ported to Swift. The Linux counterpart is `pisar-hotkey`
+from this repo, see above.
 
 ### License
 
@@ -169,15 +225,16 @@ GigaChat, лучшая на сегодня открытая модель для 
 в формат ONNX и сжата до int8, поэтому работает на обычном сервере без видеокарты
 и весит 309 МБ вместо гигабайта (204 МБ в архиве).
 
-### Одно ядро, две оболочки
+### Одно ядро, три оболочки
 
 Вся работа — в `giga_core.py`: подготовка звука, запуск модели, декодирование.
-Сверху два способа обратиться:
+Сверху три способа обратиться:
 
 | Оболочка | Как звать | Когда |
 |---|---|---|
 | командная строка | `pisar файл.ogg` | разовая расшифровка, скрипты |
 | сервер | `pisar --serve` | поток записей: модель живёт в памяти |
+| диктовка | зажать правый Ctrl | набор голосом на рабочем столе Linux (только X11) |
 
 Сервер отвечает по-OpenAI'ному, поэтому годится и для чужих программ:
 
@@ -250,6 +307,49 @@ text = subprocess.run(
 ).stdout.strip()
 ```
 
+### Диктовка по горячей клавише (Linux, только X11)
+
+То же, что делает приложение для macOS, только для Linux. Зажал правый Ctrl,
+сказал, отпустил — текст вставился в активное окно.
+
+```bash
+curl -fsSL .../install.sh | bash -s -- --hotkey
+```
+
+Доставит `xclip`, `pulseaudio-utils` и `pynput`, положит `pisar-hotkey`
+в `/usr/local/bin`, запустит и пропишет в `~/.config/autostart`, чтобы
+поднимался после входа в систему.
+
+- правый Ctrl — диктовка, текст вставляется с пробелом в конце;
+- правый Ctrl + Shift — после вставки ещё нажмётся Enter, удобно для чатов;
+- текст идёт через буфер обмена, и через 300 мс в буфер возвращается то, что
+  там было. Возвращается один формат (текст как текст, иначе первый
+  предложенный, так что картинка не пропадёт, а у текста из браузера
+  потеряется оформление). Медленному окну может не хватить времени —
+  `PISAR_CLIPBOARD_MS=800`, а `0` оставляет в буфере надиктованное;
+- история надиктованного — `$XDG_RUNTIME_DIR/pisar-history.log`. Живёт
+  в памяти, ротируется по 256 КБ и пропадает при выключении. Без
+  `XDG_RUNTIME_DIR` история не ведётся;
+- другая клавиша — `PISAR_KEY=alt_r` (любое имя из `pynput.keyboard.Key`);
+- лог — `$XDG_RUNTIME_DIR/pisar-hotkey.log` (или `~/.cache/pisar-hotkey.log`);
+- выключить — удалить `~/.config/autostart/giga-pisar.desktop`.
+
+Микрофон открывается только пока зажата клавиша. Между диктовками его
+никто не слушает.
+
+Только X11. Под Wayland программа не видит чужих нажатий и не может так
+вставлять текст в чужие окна, поэтому `pisar-hotkey` там выходит с сообщением.
+Проверено на Ubuntu 24.04 с KDE Plasma.
+
+Если обрезается начало фразы, добавьте `--no-mic-sleep` (см. грабли ниже):
+
+```bash
+curl -fsSL .../install.sh | bash -s -- --hotkey --no-mic-sleep
+```
+
+Если стоит ещё и сервер, демон диктовки всё равно грузит свою копию модели —
+это плюс около 500 МБ памяти.
+
 ### Сколько работает
 
 Замеры на 2 ядрах, Ubuntu 24.04, запись 13 секунд:
@@ -293,11 +393,22 @@ text = subprocess.run(
 Там лежит 0.1.0 со старым API: функций `load_onnx` и `infer_onnx`, нужных
 для модели v3, в ней просто нет. Только из исходников с GitHub.
 
+**Звуковая карта просыпается не сразу.** Запуск `pw-record` на каждое нажатие
+съедал около секунды начала фразы. `parec` с `--latency-msec=50` отдаёт звук
+гораздо раньше, но уснувшей звуковой карте всё равно нужно ~240 мс, чтобы
+проснуться (замер на Intel SOF), и первый слог пропадает. С проснувшейся
+картой первый звук приходит через ~25 мс. `--no-mic-sleep` ставит правило
+WirePlumber, которое не даёт микрофонам засыпать. Звук никто не читает, пока
+не зажата клавиша, и значка «микрофон используется» нет, но карта не спит —
+это немного батареи. Вернуть как было — удалить
+`~/.config/wireplumber/*/51-pisar-mic-nosuspend.*`.
+
 ### Родственный проект
 
 [Giga Pisar для macOS](https://github.com/moznoazachem/giga-pisar) — диктовка
 по горячей клавише: зажал правый ⌘, сказал, отпустил, текст вставился
-в активное окно. Внутри то же самое ядро, перенесённое на Swift.
+в активное окно. Внутри то же самое ядро, перенесённое на Swift. Аналог для
+Linux — `pisar-hotkey` из этого репозитория, см. выше.
 
 ### Лицензия
 
